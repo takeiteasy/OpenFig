@@ -1,0 +1,27 @@
+name: fig
+
+options:
+  bundleIdPrefix: io.github.takeiteasy
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "15.0"
+
+settings:
+  GCC_C_LANGUAGE_STANDARD: c11
+  CLANG_WARN_DOCUMENTATION_COMMENTS: false
+
+targets:
+  fig:
+    type: tool
+    platform: macOS
+    sources:
+      - path: src/
+      - path: README.md
+        type: folder
+      - path: project.yml
+        type: folder
+      - path: Makefile
+        type: folder
+    dependencies:
+        - sdk: Cocoa.framework
+        - sdk: Accessibility.framework

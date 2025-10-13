@@ -1,0 +1,18 @@
+//
+//  TerminalWindow.h
+//  fig
+//
+//  Created by George Watson on 13/10/2025.
+//
+
+#pragma once
+
+#import <ApplicationServices/ApplicationServices.h>
+
+@interface TerminalWindow : NSObject
+@property (nonatomic, assign) pid_t pid;
+@property (nonatomic, strong) NSString *appName;
+@property (nonatomic, strong) NSString *windowTitle;
+@property (nonatomic) AXUIElementRef axWindow;
+@property (nonatomic) CGPoint cursorPosition;
+@end
