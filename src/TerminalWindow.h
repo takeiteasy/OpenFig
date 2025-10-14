@@ -17,4 +17,5 @@
 @property (nonatomic) CGPoint cursorPosition;
 @property (nonatomic) AXUIElementRef axWindow;
 @property (nonatomic, strong) NSDictionary *bufferInfo; // New: terminal buffer content
+@property (nonatomic, assign, getter=isFocused) BOOL focused; // New: is this the focused terminal window?
 @end

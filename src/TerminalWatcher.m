@@ -7,10 +7,25 @@
 
 #import "TerminalWatcher.h"
 
+NSString* const TerminalWatcherDidUpdateTerminalsNotification = @"TerminalWatcherDidUpdateTerminalsNotification";
+NSString* const TerminalWatcherTerminalDidUpdateNotification = @"TerminalWatcherTerminalDidUpdateNotification";
+NSString* const TerminalWatcherFocusedTerminalDidChangeNotification = @"TerminalWatcherFocusedTerminalDidChangeNotification";
+
+@interface TerminalWatcher ()
+// Internal mutable storage and timer
+@property (nonatomic, strong) NSTimer *_timer;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber*, TerminalWindow*> *_terminals;
+@property (nonatomic, strong) NSDictionary *_shellPrompts;
+
+// Expose read-only copy via the public property
+@property (nonatomic, strong, readwrite) NSDictionary<NSNumber*, TerminalWindow*> *terminals;
+@end
+
 @implementation TerminalWatcher
 @synthesize _timer;
 @synthesize _terminals;
 @synthesize _shellPrompts;
+@synthesize terminals = _publicTerminals;
 
 static NSString *StripANSIEscapes(NSString *s) {
     if (!s)
@@ -40,15 +55,8 @@ static NSString *StripANSIEscapes(NSString *s) {
         setenv("LC_ALL", "C", 1);
         setenv("LANG", "C", 1);
 
-        // Build argv
-        // Defaults: interactive (-i). Skip user rc files for consistency where possible.
-        // bash: --noprofile --norc -i
-        // zsh: -f -i
-        // fish: -i
-        // csh/tcsh/ksh/sh: -i
         const char *sh = [shellName UTF8String];
 
-        // Prepare argv vector
         const char *argv[8] = {0};
         int idx = 0;
         argv[idx++] = sh;
@@ -64,23 +72,20 @@ static NSString *StripANSIEscapes(NSString *s) {
             argv[idx++] = "-i";
         argv[idx] = NULL;
 
-        // execvp uses PATH to find the shell by name
         execvp(sh, (char * const *)argv);
         _exit(127);
     }
 
     // Parent: read from master pty until idle or timeout
-    // Make non-blocking
     int flags = fcntl(masterFd, F_GETFL, 0);
     fcntl(masterFd, F_SETFL, flags | O_NONBLOCK);
 
     NSMutableData *buffer = [NSMutableData data];
     const NSTimeInterval overallDeadline = [NSDate timeIntervalSinceReferenceDate] + timeout;
-    NSTimeInterval idleDeadline = [NSDate timeIntervalSinceReferenceDate] + 0.25; // 250ms idle window
+    NSTimeInterval idleDeadline = [NSDate timeIntervalSinceReferenceDate] + 0.25;
 
     char tmp[4096];
     while (true) {
-        // Compute next select timeout
         NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
         if (now > overallDeadline) break;
 
@@ -100,13 +105,10 @@ static NSString *StripANSIEscapes(NSString *s) {
                 break;
             if (n > 0) {
                 [buffer appendBytes:tmp length:(NSUInteger)n];
-                // Reset idle deadline since we got data
                 idleDeadline = [NSDate timeIntervalSinceReferenceDate] + 0.20;
             }
-            // EAGAIN or error; continue
         }
 
-        // Stop if we've been idle for a short time and have some data
         if (buffer.length > 0 && [NSDate timeIntervalSinceReferenceDate] > idleDeadline)
             break;
     }
@@ -118,24 +120,18 @@ static NSString *StripANSIEscapes(NSString *s) {
     if (buffer.length == 0)
         return nil;
 
-    // Convert to string and strip ANSI
     NSString *raw = [[NSString alloc] initWithData:buffer encoding:NSUTF8StringEncoding];
     if (!raw)
         if (!(raw = [[NSString alloc] initWithData:buffer encoding:NSISOLatin1StringEncoding]))
             return nil;
 
     NSString *clean = StripANSIEscapes(raw);
-    // Extract the last line fragment (prompt often does not end with newline)
-    // Split by newlines and take the last component
     NSArray<NSString*> *lines = [clean componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
     NSString *last = lines.lastObject ?: clean;
-    // Trim trailing spaces commonly used in prompts
     NSString *trimmed = [last stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\r"]];
-    // If empty, try the second-to-last (some shells print a banner before prompt)
     if (trimmed.length == 0 && lines.count >= 2)
         trimmed = [lines[lines.count - 2] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 
-    // As a safeguard, collapse multiple spaces
     return trimmed.length > 0 ? trimmed : nil;
 }
 
@@ -164,16 +160,12 @@ static NSString *StripANSIEscapes(NSString *s) {
     return nil;
 }
 
-// Get the prompt string for a specific shell (rendered)
 - (NSString*)GetShellPrompt:(NSString*)shellName
          withPromptVariable:(NSString*)promptVariable {
-    // Use PTY-based rendering so backslash/percent escapes are expanded by the shell itself
-    // A short timeout is enough to capture the initial prompt
     NSString *rendered = [self renderPromptForShell:shellName timeout:1.0];
     if (rendered && rendered.length > 0)
         return rendered;
 
-    // Fallbacks if PTY fails for any reason
     if ([shellName isEqualToString:@"fish"]) {
         NSString *command = [NSString stringWithFormat:@"%@ -i -c 'fish_prompt'", shellName];
         NSString *out = [self ExecuteShellCommand:command];
@@ -181,13 +173,11 @@ static NSString *StripANSIEscapes(NSString *s) {
     }
 
     if ([shellName isEqualToString:@"zsh"]) {
-        // zsh can render PROMPT with print -P
         NSString *command = [NSString stringWithFormat:@"%@ -i -c 'print -P \"$PROMPT\"'", shellName];
         NSString *out = [self ExecuteShellCommand:command];
         return out ?: @"";
     }
 
-    // As a last resort, echo the prompt variable (may be unexpanded)
     NSString *command = [NSString stringWithFormat:@"%@ -i -c 'echo \"$%@\"'", shellName, promptVariable];
     return [self ExecuteShellCommand:command] ?: @"";
 }
@@ -228,11 +218,9 @@ static NSString *StripANSIEscapes(NSString *s) {
 - (instancetype)init {
     if (self = [super init]) {
         _terminals = [NSMutableDictionary dictionary];
-        _timer = [NSTimer scheduledTimerWithTimeInterval:0.5
-                                                  target:self
-                                                selector:@selector(updateAllTerminals)
-                                                userInfo:nil
-                                                 repeats:YES];
+        self.terminals = @{}; // start with empty immutable view
+
+        // Build shell prompts first (synchronous)
         NSArray *availableShells = [self GetAvailableShells];
         if ([availableShells count] == 0) {
             NSLog(@"Unable to find any available shells!\n");
@@ -241,7 +229,7 @@ static NSString *StripANSIEscapes(NSString *s) {
         NSDictionary *promptVars = @{
             @"bash": @"PS1",
             @"zsh": @"PS1",
-            @"fish": @"fish_prompt",  // fish uses a function instead
+            @"fish": @"fish_prompt",
             @"tcsh": @"prompt",
             @"csh": @"prompt",
             @"sh": @"PS1",
@@ -255,7 +243,16 @@ static NSString *StripANSIEscapes(NSString *s) {
                                withPromptVariable:promptVars[shell]];
         }
         _shellPrompts = [prompts copy];
+
+        // Initial update
         [self updateAllTerminals];
+
+        // Repeating timer
+        _timer = [NSTimer scheduledTimerWithTimeInterval:0.5
+                                                  target:self
+                                                selector:@selector(updateAllTerminals)
+                                                userInfo:nil
+                                                 repeats:YES];
     }
     return self;
 }
@@ -280,7 +277,6 @@ static NSString *StripANSIEscapes(NSString *s) {
         return CGPointZero;
     }
 
-    // Check if this element has cursor information
     CFTypeRef selectedRange = NULL;
     AXError rangeError = AXUIElementCopyAttributeValue(element,
                                                      kAXSelectedTextRangeAttribute,
@@ -305,7 +301,6 @@ static NSString *StripANSIEscapes(NSString *s) {
         CFRelease(selectedRange);
     }
 
-    // Recursively search children
     CFArrayRef children = NULL;
     AXError error = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute, (CFTypeRef*)&children);
 
@@ -326,10 +321,8 @@ static NSString *StripANSIEscapes(NSString *s) {
 }
 
 - (CGPoint)getCursorPositionForWindow:(AXUIElementRef)window {
-    // Try to find text areas by recursively searching the UI hierarchy
     CGPoint cursorPosition = [self findCursorInElement:window depth:0 maxDepth:4];
     if (CGPointEqualToPoint(cursorPosition, CGPointZero)) {
-        // Fallback: get window position
         CFTypeRef windowPos = NULL;
         AXError error = AXUIElementCopyAttributeValue(window,
                                                       kAXPositionAttribute,
@@ -347,7 +340,6 @@ static NSString *StripANSIEscapes(NSString *s) {
         return;
     }
 
-    // Debug: Check element role and other attributes
     CFTypeRef role = NULL;
     AXUIElementCopyAttributeValue(element, kAXRoleAttribute, (CFTypeRef*)&role);
     NSString *roleStr = role ? (__bridge NSString*)role : @"(null)";
@@ -355,32 +347,25 @@ static NSString *StripANSIEscapes(NSString *s) {
     CFTypeRef description = NULL;
     AXUIElementCopyAttributeValue(element, kAXDescriptionAttribute, (CFTypeRef*)&description);
     NSString *descStr = description ? (__bridge NSString*)description : @"(null)";
+    if (description)
+        CFRelease(description);
+    if (role)
+        CFRelease(role);
 
-    if (depth <= 2) { // Only log top levels to avoid spam
-        printf("DEBUG: Depth %d - Role: %s, Desc: %s\n", depth, roleStr.UTF8String, descStr.UTF8String);
-    }
-
-    if (description) CFRelease(description);
-    if (role) CFRelease(role);
-
-    // Check if this element has text content
     CFTypeRef value = NULL;
     AXError valueError = AXUIElementCopyAttributeValue(element, kAXValueAttribute, &value);
 
     do {
         if (valueError != kAXErrorSuccess || !value)
             break;
-        // Check if it's a string value (text content)
         if (CFGetTypeID(value) != CFStringGetTypeID())
             break;
 
         CFStringRef textValue = (CFStringRef)value;
         NSString *text = (__bridge NSString*)textValue;
-        // Look for elements that might contain terminal buffer text
         if (text.length == 0)
             break;
 
-        // Check if this looks like current command line input
         CFTypeRef selectedRange = NULL;
         AXError rangeError = AXUIElementCopyAttributeValue(element,
                                                            kAXSelectedTextRangeAttribute,
@@ -388,14 +373,11 @@ static NSString *StripANSIEscapes(NSString *s) {
         if (rangeError != kAXErrorSuccess || !selectedRange)
             break;
 
-        // Get the range details
         CFRange range;
         AXValueGetValue((AXValueRef)selectedRange, kAXValueCFRangeType, &range);
 
-        // Check if cursor is at the end of the text (typical for command line input)
         BOOL cursorAtEnd = (range.location == text.length);
 
-        // Check if text ends with a shell prompt pattern
         NSRegularExpression *promptRegex = [NSRegularExpression regularExpressionWithPattern:@"[\\$%#>]$" options:0 error:nil];
         NSTextCheckingResult *promptMatch = [promptRegex firstMatchInString:text options:0 range:NSMakeRange(0, text.length)];
         BOOL hasPrompt = (promptMatch != nil);
@@ -406,7 +388,7 @@ static NSString *StripANSIEscapes(NSString *s) {
             @"selectionLength": @(range.length),
             @"cursorAtEnd": @(cursorAtEnd),
             @"hasPrompt": @(hasPrompt),
-            @"isCommandLine": @((cursorAtEnd && hasPrompt) || text.length < 200), // Shorter text more likely to be current command
+            @"isCommandLine": @((cursorAtEnd && hasPrompt) || text.length < 200),
             @"role": roleStr
         };
 
@@ -414,11 +396,9 @@ static NSString *StripANSIEscapes(NSString *s) {
         CFRelease(selectedRange);
     } while(0);
 
-    // Always release value if we got one
     if (value)
         CFRelease(value);
 
-    // Recursively search children
     CFArrayRef children = NULL;
     AXError error = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute, (CFTypeRef*)&children);
     if (error == kAXErrorSuccess && children) {
@@ -434,7 +414,6 @@ static NSString *StripANSIEscapes(NSString *s) {
     NSMutableArray *allBuffers = [NSMutableArray array];
     [self collectBufferInfo:window depth:0 maxDepth:4 into:allBuffers];
 
-    // Find the best buffer (prioritize AXStaticText over other roles, then command line input)
     NSDictionary *bestBuffer = nil;
     for (NSDictionary *buffer in allBuffers) {
         if (!bestBuffer) {
@@ -445,19 +424,14 @@ static NSString *StripANSIEscapes(NSString *s) {
         NSString *bestRole = bestBuffer[@"role"];
         BOOL currentIsCommandLine = [buffer[@"isCommandLine"] boolValue];
         BOOL bestIsCommandLine = [bestBuffer[@"isCommandLine"] boolValue];
-        // Prioritize AXTextArea over other roles - this is most likely the editable terminal buffer
         BOOL currentIsTextArea = [currentRole isEqualToString:@"AXTextArea"];
         BOOL bestIsTextArea = [bestRole isEqualToString:@"AXTextArea"];
-        // Prefer AXTextArea over other roles
         if (currentIsTextArea && !bestIsTextArea)
             bestBuffer = buffer;
         else if (currentIsTextArea == bestIsTextArea) {
-            // Both are same role type, prefer command line input over scrollback
             if (currentIsCommandLine && !bestIsCommandLine)
                 bestBuffer = buffer;
             else if (currentIsCommandLine == bestIsCommandLine) {
-                // If both are same type, prefer longer text for TextArea (more complete buffer)
-                // or shorter text for command line (more likely to be current input)
                 if (currentIsTextArea) {
                     if ([buffer[@"text"] length] > [bestBuffer[@"text"] length])
                         bestBuffer = buffer;
@@ -480,7 +454,8 @@ static NSString *StripANSIEscapes(NSString *s) {
 
 - (void)updateTerminalWindow:(AXUIElementRef)window
                          pid:(pid_t)pid
-                     appName:(NSString*)appName {
+                     appName:(NSString*)appName
+                     focused:(BOOL)isFocused {
     NSNumber *key = @(pid);
     TerminalWindow *termWindow = _terminals[key];
     if (!termWindow) {
@@ -489,6 +464,7 @@ static NSString *StripANSIEscapes(NSString *s) {
         termWindow.appName = appName;
         termWindow.axWindow = window;
         termWindow.shell = nil;
+        termWindow.focused = NO;
         CFRetain(window);
         _terminals[key] = termWindow;
     }
@@ -503,9 +479,17 @@ static NSString *StripANSIEscapes(NSString *s) {
         CFRelease(titleValue);
     }
 
+    CGPoint lastPoint = termWindow.cursorPosition;
     termWindow.cursorPosition = [self getCursorPositionForWindow:window];
+    if (lastPoint.x != termWindow.cursorPosition.x || lastPoint.y != termWindow.cursorPosition.y) {
+        [[NSNotificationCenter defaultCenter] postNotificationName:TerminalWatcherTerminalDidUpdateNotification
+                                                            object:self
+                                                          userInfo:@{@"terminal": termWindow}];
+    }
     termWindow.bufferInfo = [self getTerminalBufferInfo:termWindow.axWindow];
-    if (termWindow.shell == nil && _shellPrompts != nil) {
+    termWindow.focused = isFocused;
+
+    if (termWindow.shell == nil) {
         NSArray *lines = [termWindow.bufferInfo[@"text"] componentsSeparatedByString:@"\n"];
         for (NSString *line in lines) {
             for (NSString *shell in _shellPrompts)
@@ -517,32 +501,35 @@ static NSString *StripANSIEscapes(NSString *s) {
                 break;
         }
     }
-
-    // Debug output for cursor position changes
-    static CGPoint lastCursorPos = {-1, -1};
-    if (!CGPointEqualToPoint(termWindow.cursorPosition, lastCursorPos)) {
-        printf("Cursor position changed for %s: (%.0f, %.0f) -> (%.0f, %.0f)\n",
-               appName.UTF8String, lastCursorPos.x, lastCursorPos.y,
-               termWindow.cursorPosition.x, termWindow.cursorPosition.y);
-        lastCursorPos = termWindow.cursorPosition;
-    }
 }
 
 - (void)updateAllTerminals {
+    static NSNumber *lastFocusedPID = nil;
+    NSNumber *currentFocusedPID = nil;
+
+    // Get the focused window from the frontmost application
+    AXUIElementRef focusedWindow = NULL;
+    NSRunningApplication *frontmostApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
+    if (frontmostApp) {
+        AXUIElementRef appElement = AXUIElementCreateApplication(frontmostApp.processIdentifier);
+        if (appElement) {
+            AXUIElementCopyAttributeValue(appElement, kAXFocusedWindowAttribute, (CFTypeRef*)&focusedWindow);
+            CFRelease(appElement);
+        }
+    }
+
     NSArray<NSRunningApplication*> *apps = [[NSWorkspace sharedWorkspace] runningApplications];
     NSMutableSet *currentPIDs = [NSMutableSet set];
 
     for (NSRunningApplication *app in apps) {
         NSString *bundleId = app.bundleIdentifier;
-        // Check if it's a terminal application
         if (![self isTerminalApplication:bundleId])
             continue;
 
         pid_t pid = app.processIdentifier;
         [currentPIDs addObject:@(pid)];
-        // Create AX element for this app
+
         AXUIElementRef appElement = AXUIElementCreateApplication(pid);
-        // Get all windows for this app
         CFArrayRef windowList = NULL;
         AXError error = AXUIElementCopyAttributeValue(appElement,
                                                      kAXWindowsAttribute,
@@ -551,22 +538,54 @@ static NSString *StripANSIEscapes(NSString *s) {
             CFIndex windowCount = CFArrayGetCount(windowList);
             for (CFIndex i = 0; i < windowCount; i++) {
                 AXUIElementRef window = (AXUIElementRef)CFArrayGetValueAtIndex(windowList, i);
-                // Balance ownership explicitly for analyzer clarity
                 CFRetain(window);
-                // Create or update terminal window info
+
+                BOOL isFocused = NO;
+                if (focusedWindow) {
+                    isFocused = CFEqual(window, focusedWindow);
+                    if (isFocused)
+                        currentFocusedPID = @(pid);
+                }
+
                 [self updateTerminalWindow:window
                                        pid:pid
-                                   appName:app.localizedName];
+                                   appName:app.localizedName
+                                   focused:isFocused];
                 CFRelease(window);
             }
             CFRelease(windowList);
         }
         CFRelease(appElement);
     }
+    if (focusedWindow)
+        CFRelease(focusedWindow);
 
-    // Remove terminals that are no longer open
     for (NSNumber *pidNum in [_terminals allKeys])
         if (![currentPIDs containsObject:pidNum])
             [_terminals removeObjectForKey:pidNum];
+
+    // Refresh the public immutable snapshot
+    self.terminals = [_terminals copy];
+
+    // Bulk update notification
+    [[NSNotificationCenter defaultCenter] postNotificationName:TerminalWatcherDidUpdateTerminalsNotification
+                                                        object:self
+                                                      userInfo:nil];
+
+    // Focus change notification
+    BOOL focusedChanged = (lastFocusedPID == nil && currentFocusedPID != nil) ||
+                          (lastFocusedPID != nil && currentFocusedPID == nil) ||
+                          (lastFocusedPID != nil && currentFocusedPID != nil && ![lastFocusedPID isEqualToNumber:currentFocusedPID]);
+
+    if (focusedChanged) {
+        TerminalWindow *focusedTW = currentFocusedPID ? _terminals[currentFocusedPID] : nil;
+        [[NSNotificationCenter defaultCenter] postNotificationName:TerminalWatcherFocusedTerminalDidChangeNotification
+                                                            object:self
+                                                          userInfo:@{
+                                                              @"pid": currentFocusedPID ?: (id)[NSNull null],
+                                                              @"terminal": focusedTW ?: (id)[NSNull null]
+                                                          }];
+        lastFocusedPID = currentFocusedPID;
+    }
 }
 @end

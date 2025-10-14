@@ -1,9 +1,8 @@
 #import "SuggestionWindow.h"
 
 @implementation SuggestionWindow
-@synthesize _watcher;
 
--(instancetype)initWithDelegate:(id<NSWindowDelegate>)delegate {
+- (instancetype)initWithDelegate:(id<NSWindowDelegate>)delegate {
     if (self = [super initWithContentRect:NSMakeRect(0, 0, 0, 0)
                                 styleMask:NSWindowStyleMaskBorderless
                                   backing:NSBackingStoreBuffered
@@ -18,13 +17,11 @@
         [self setCanHide:NO];
         [self setDelegate:delegate];
         [self setReleasedWhenClosed:NO];
-
-        _watcher = [TerminalWatcher new];
     }
     return self;
 }
 
--(BOOL)canBecomeKeyWindow {
+- (BOOL)canBecomeKeyWindow {
     return YES;
 }
 @end

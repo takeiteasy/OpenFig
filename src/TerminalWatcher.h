@@ -17,8 +17,16 @@
 #import <fcntl.h>
 #import <unistd.h>
 
+// Notifications AppDelegate (and others) can observe.
+extern NSString * const TerminalWatcherDidUpdateTerminalsNotification;          // userInfo: nil
+extern NSString * const TerminalWatcherTerminalDidUpdateNotification;           // userInfo: @{ @"pid": NSNumber, @"terminal": TerminalWindow* }
+extern NSString * const TerminalWatcherFocusedTerminalDidChangeNotification;    // userInfo: @{ @"pid": NSNumber (or NSNull), @"terminal": TerminalWindow* (or NSNull) }
+
 @interface TerminalWatcher : NSObject
-@property (nonatomic, strong) NSTimer *_timer;
-@property (nonatomic, strong) NSMutableDictionary<NSNumber*, TerminalWindow*> *_terminals;
-@property (nonatomic, strong) NSDictionary *_shellPrompts;
+
+// Read-only snapshot of terminals keyed by app PID.
+@property (nonatomic, strong, readonly) NSDictionary<NSNumber*, TerminalWindow*> *terminals;
+
+- (void)updateAllTerminals;
+
 @end
