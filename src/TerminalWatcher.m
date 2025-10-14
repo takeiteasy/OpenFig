@@ -10,15 +10,18 @@
 @implementation TerminalWatcher
 @synthesize _timer;
 @synthesize _terminals;
+@synthesize _shellPrompts;
 
 static NSString *StripANSIEscapes(NSString *s) {
-    if (!s) return nil;
+    if (!s)
+        return nil;
     // Remove CSI, OSC, and other common ANSI escape sequences
     NSError *err = nil;
-    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:
-                                  @"\\x1B\\[[0-9;?]*[ -/]*[@-~]|\\x1B\\][^\\a]*(\\a|\\x1B\\\\)|\\x1B[@-Z\\\\-_]"
-                                  options:0 error:&err];
-    if (err) return s;
+    NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"\\x1B\\[[0-9;?]*[ -/]*[@-~]|\\x1B\\][^\\a]*(\\a|\\x1B\\\\)|\\x1B[@-Z\\\\-_]"
+                                                                           options:0
+                                                                             error:&err];
+    if (err)
+        return s;
     NSMutableString *m = [s mutableCopy];
     [regex replaceMatchesInString:m options:0 range:NSMakeRange(0, m.length) withTemplate:@""];
     return m;
@@ -28,9 +31,8 @@ static NSString *StripANSIEscapes(NSString *s) {
     // Launch shell attached to a PTY and capture the initial prompt
     int masterFd = -1;
     pid_t pid = forkpty(&masterFd, NULL, NULL, NULL);
-    if (pid < 0) {
+    if (pid < 0)
         return nil;
-    }
 
     if (pid == 0) {
         // Child: set up a minimal env and exec the shell interactively
@@ -58,14 +60,8 @@ static NSString *StripANSIEscapes(NSString *s) {
         } else if (strcmp(sh, "zsh") == 0) {
             argv[idx++] = "-f";
             argv[idx++] = "-i";
-        } else if (strcmp(sh, "fish") == 0) {
+        } else
             argv[idx++] = "-i";
-        } else if (strcmp(sh, "tcsh") == 0 || strcmp(sh, "csh") == 0 ||
-                   strcmp(sh, "ksh") == 0 || strcmp(sh, "sh") == 0) {
-            argv[idx++] = "-i";
-        } else {
-            argv[idx++] = "-i";
-        }
         argv[idx] = NULL;
 
         // execvp uses PATH to find the shell by name
@@ -83,7 +79,6 @@ static NSString *StripANSIEscapes(NSString *s) {
     NSTimeInterval idleDeadline = [NSDate timeIntervalSinceReferenceDate] + 0.25; // 250ms idle window
 
     char tmp[4096];
-
     while (true) {
         // Compute next select timeout
         NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
@@ -101,92 +96,47 @@ static NSString *StripANSIEscapes(NSString *s) {
         int sel = select(masterFd + 1, &rfds, NULL, NULL, &tv);
         if (sel > 0 && FD_ISSET(masterFd, &rfds)) {
             ssize_t n = read(masterFd, tmp, sizeof(tmp));
+            if (n == 0) // EOF
+                break;
             if (n > 0) {
                 [buffer appendBytes:tmp length:(NSUInteger)n];
                 // Reset idle deadline since we got data
                 idleDeadline = [NSDate timeIntervalSinceReferenceDate] + 0.20;
-            } else if (n == 0) {
-                // EOF
-                break;
-            } else {
-                // EAGAIN or error; continue
             }
+            // EAGAIN or error; continue
         }
 
         // Stop if we've been idle for a short time and have some data
-        if (buffer.length > 0 && [NSDate timeIntervalSinceReferenceDate] > idleDeadline) {
+        if (buffer.length > 0 && [NSDate timeIntervalSinceReferenceDate] > idleDeadline)
             break;
-        }
     }
 
     // Best effort cleanup
     kill(pid, SIGKILL);
     close(masterFd);
 
-    if (buffer.length == 0) {
+    if (buffer.length == 0)
         return nil;
-    }
 
     // Convert to string and strip ANSI
     NSString *raw = [[NSString alloc] initWithData:buffer encoding:NSUTF8StringEncoding];
-    if (!raw) {
-        // Try ISO Latin 1 fallback
-        raw = [[NSString alloc] initWithData:buffer encoding:NSISOLatin1StringEncoding];
-    }
-    if (!raw) return nil;
+    if (!raw)
+        if (!(raw = [[NSString alloc] initWithData:buffer encoding:NSISOLatin1StringEncoding]))
+            return nil;
 
     NSString *clean = StripANSIEscapes(raw);
-
     // Extract the last line fragment (prompt often does not end with newline)
     // Split by newlines and take the last component
     NSArray<NSString*> *lines = [clean componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
     NSString *last = lines.lastObject ?: clean;
-
     // Trim trailing spaces commonly used in prompts
     NSString *trimmed = [last stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\r"]];
-
     // If empty, try the second-to-last (some shells print a banner before prompt)
-    if (trimmed.length == 0 && lines.count >= 2) {
+    if (trimmed.length == 0 && lines.count >= 2)
         trimmed = [lines[lines.count - 2] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    }
 
     // As a safeguard, collapse multiple spaces
     return trimmed.length > 0 ? trimmed : nil;
-}
-
-- (NSString*)GetDefaultShell {
-    // Try environment variable first
-    const char *shellEnv = getenv("SHELL");
-    if (shellEnv != NULL) {
-        NSString *shellPath = [NSString stringWithUTF8String:shellEnv];
-        // Extract just the shell name from the path
-        return [shellPath lastPathComponent];
-    }
-
-    // Fallback: try to get from dscl
-    NSTask *task = [[NSTask alloc] init];
-    [task setLaunchPath:@"/usr/bin/dscl"];
-    [task setArguments:@[@".", @"-read", NSHomeDirectory(), @"UserShell"]];
-
-    NSPipe *pipe = [NSPipe pipe];
-    [task setStandardOutput:pipe];
-    [task setStandardError:[NSPipe pipe]];
-
-    [task launch];
-    [task waitUntilExit];
-
-    if ([task terminationStatus] == 0) {
-        NSData *data = [[pipe fileHandleForReading] readDataToEndOfFile];
-        NSString *output = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-
-        // Output format: "UserShell: /bin/zsh"
-        NSArray *components = [output componentsSeparatedByString:@": "];
-        if (components.count > 1) {
-            NSString *shellPath = [components[1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-            return [shellPath lastPathComponent];
-        }
-    }
-    return nil;
 }
 
 - (NSString*)ExecuteShellCommand:(NSString*)command {
@@ -220,9 +170,8 @@ static NSString *StripANSIEscapes(NSString *s) {
     // Use PTY-based rendering so backslash/percent escapes are expanded by the shell itself
     // A short timeout is enough to capture the initial prompt
     NSString *rendered = [self renderPromptForShell:shellName timeout:1.0];
-    if (rendered && rendered.length > 0) {
+    if (rendered && rendered.length > 0)
         return rendered;
-    }
 
     // Fallbacks if PTY fails for any reason
     if ([shellName isEqualToString:@"fish"]) {
@@ -284,18 +233,10 @@ static NSString *StripANSIEscapes(NSString *s) {
                                                 selector:@selector(updateAllTerminals)
                                                 userInfo:nil
                                                  repeats:YES];
-        NSString *defaultShell = [self GetDefaultShell];
-        if (!defaultShell) {
-            NSLog(@"Unable to find default shell!\n");
-            return nil;
-        }
         NSArray *availableShells = [self GetAvailableShells];
         if ([availableShells count] == 0) {
             NSLog(@"Unable to find any available shells!\n");
             return nil;
-        }
-        for (NSString *shell in availableShells) {
-            NSLog(@"%@\n", shell);
         }
         NSDictionary *promptVars = @{
             @"bash": @"PS1",
@@ -313,9 +254,7 @@ static NSString *StripANSIEscapes(NSString *s) {
             prompts[shell] = [self GetShellPrompt:shell
                                withPromptVariable:promptVars[shell]];
         }
-        for (NSString *shell in [prompts allKeys]) {
-            NSLog(@"%@: %@\n", shell, prompts[shell]);
-        }
+        _shellPrompts = [prompts copy];
         [self updateAllTerminals];
     }
     return self;
@@ -473,8 +412,11 @@ static NSString *StripANSIEscapes(NSString *s) {
 
         [buffers addObject:bufferInfo];
         CFRelease(selectedRange);
-        CFRelease(value);
     } while(0);
+
+    // Always release value if we got one
+    if (value)
+        CFRelease(value);
 
     // Recursively search children
     CFArrayRef children = NULL;
@@ -539,15 +481,14 @@ static NSString *StripANSIEscapes(NSString *s) {
 - (void)updateTerminalWindow:(AXUIElementRef)window
                          pid:(pid_t)pid
                      appName:(NSString*)appName {
-
     NSNumber *key = @(pid);
     TerminalWindow *termWindow = _terminals[key];
-
     if (!termWindow) {
         termWindow = [[TerminalWindow alloc] init];
         termWindow.pid = pid;
         termWindow.appName = appName;
         termWindow.axWindow = window;
+        termWindow.shell = nil;
         CFRetain(window);
         _terminals[key] = termWindow;
     }
@@ -562,9 +503,20 @@ static NSString *StripANSIEscapes(NSString *s) {
         CFRelease(titleValue);
     }
 
-    // Update cursor position for focused window
     termWindow.cursorPosition = [self getCursorPositionForWindow:window];
-    NSDictionary *d = [self getTerminalBufferInfo:termWindow.axWindow];
+    termWindow.bufferInfo = [self getTerminalBufferInfo:termWindow.axWindow];
+    if (termWindow.shell == nil && _shellPrompts != nil) {
+        NSArray *lines = [termWindow.bufferInfo[@"text"] componentsSeparatedByString:@"\n"];
+        for (NSString *line in lines) {
+            for (NSString *shell in _shellPrompts)
+                if ([line containsString:_shellPrompts[shell]]) {
+                    termWindow.shell = shell;
+                    break;
+                }
+            if (termWindow.shell != nil)
+                break;
+        }
+    }
 
     // Debug output for cursor position changes
     static CGPoint lastCursorPos = {-1, -1};
@@ -585,7 +537,7 @@ static NSString *StripANSIEscapes(NSString *s) {
         // Check if it's a terminal application
         if (![self isTerminalApplication:bundleId])
             continue;
-        
+
         pid_t pid = app.processIdentifier;
         [currentPIDs addObject:@(pid)];
         // Create AX element for this app
@@ -598,11 +550,14 @@ static NSString *StripANSIEscapes(NSString *s) {
         if (error == kAXErrorSuccess && windowList) {
             CFIndex windowCount = CFArrayGetCount(windowList);
             for (CFIndex i = 0; i < windowCount; i++) {
-                AXUIElementRef window = CFArrayGetValueAtIndex(windowList, i);
+                AXUIElementRef window = (AXUIElementRef)CFArrayGetValueAtIndex(windowList, i);
+                // Balance ownership explicitly for analyzer clarity
+                CFRetain(window);
                 // Create or update terminal window info
                 [self updateTerminalWindow:window
                                        pid:pid
                                    appName:app.localizedName];
+                CFRelease(window);
             }
             CFRelease(windowList);
         }

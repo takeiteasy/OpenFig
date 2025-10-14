@@ -20,4 +20,5 @@
 @interface TerminalWatcher : NSObject
 @property (nonatomic, strong) NSTimer *_timer;
 @property (nonatomic, strong) NSMutableDictionary<NSNumber*, TerminalWindow*> *_terminals;
+@property (nonatomic, strong) NSDictionary *_shellPrompts;
 @end

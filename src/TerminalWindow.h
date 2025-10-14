@@ -13,6 +13,8 @@
 @property (nonatomic, assign) pid_t pid;
 @property (nonatomic, strong) NSString *appName;
 @property (nonatomic, strong) NSString *windowTitle;
-@property (nonatomic) AXUIElementRef axWindow;
+@property (nonatomic, strong) NSString *shell;
 @property (nonatomic) CGPoint cursorPosition;
+@property (nonatomic) AXUIElementRef axWindow;
+@property (nonatomic, strong) NSDictionary *bufferInfo; // New: terminal buffer content
 @end
