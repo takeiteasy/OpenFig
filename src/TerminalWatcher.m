@@ -30,7 +30,6 @@ NSString* const TerminalWatcherFocusedTerminalDidChangeNotification = @"Terminal
 static NSString *StripANSIEscapes(NSString *s) {
     if (!s)
         return nil;
-    // Remove CSI, OSC, and other common ANSI escape sequences
     NSError *err = nil;
     NSRegularExpression *regex = [NSRegularExpression regularExpressionWithPattern:@"\\x1B\\[[0-9;?]*[ -/]*[@-~]|\\x1B\\][^\\a]*(\\a|\\x1B\\\\)|\\x1B[@-Z\\\\-_]"
                                                                            options:0
@@ -43,14 +42,12 @@ static NSString *StripANSIEscapes(NSString *s) {
 }
 
 - (NSString*)renderPromptForShell:(NSString*)shellName timeout:(NSTimeInterval)timeout {
-    // Launch shell attached to a PTY and capture the initial prompt
     int masterFd = -1;
     pid_t pid = forkpty(&masterFd, NULL, NULL, NULL);
     if (pid < 0)
         return nil;
 
     if (pid == 0) {
-        // Child: set up a minimal env and exec the shell interactively
         setenv("TERM", "xterm-256color", 1);
         setenv("LC_ALL", "C", 1);
         setenv("LANG", "C", 1);
@@ -68,15 +65,15 @@ static NSString *StripANSIEscapes(NSString *s) {
         } else if (strcmp(sh, "zsh") == 0) {
             argv[idx++] = "-f";
             argv[idx++] = "-i";
-        } else
+        } else {
             argv[idx++] = "-i";
+        }
         argv[idx] = NULL;
 
         execvp(sh, (char * const *)argv);
         _exit(127);
     }
 
-    // Parent: read from master pty until idle or timeout
     int flags = fcntl(masterFd, F_GETFL, 0);
     fcntl(masterFd, F_SETFL, flags | O_NONBLOCK);
 
@@ -101,8 +98,7 @@ static NSString *StripANSIEscapes(NSString *s) {
         int sel = select(masterFd + 1, &rfds, NULL, NULL, &tv);
         if (sel > 0 && FD_ISSET(masterFd, &rfds)) {
             ssize_t n = read(masterFd, tmp, sizeof(tmp));
-            if (n == 0) // EOF
-                break;
+            if (n == 0) break;
             if (n > 0) {
                 [buffer appendBytes:tmp length:(NSUInteger)n];
                 idleDeadline = [NSDate timeIntervalSinceReferenceDate] + 0.20;
@@ -113,7 +109,6 @@ static NSString *StripANSIEscapes(NSString *s) {
             break;
     }
 
-    // Best effort cleanup
     kill(pid, SIGKILL);
     close(masterFd);
 
@@ -220,7 +215,6 @@ static NSString *StripANSIEscapes(NSString *s) {
         _terminals = [NSMutableDictionary dictionary];
         self.terminals = @{}; // start with empty immutable view
 
-        // Build shell prompts first (synchronous)
         NSArray *availableShells = [self GetAvailableShells];
         if ([availableShells count] == 0) {
             NSLog(@"Unable to find any available shells!\n");
@@ -239,16 +233,13 @@ static NSString *StripANSIEscapes(NSString *s) {
         for (NSString *shell in [promptVars allKeys]) {
             if (![availableShells containsObject:shell])
                 continue;
-            prompts[shell] = [self GetShellPrompt:shell
-                               withPromptVariable:promptVars[shell]];
+            prompts[shell] = [self GetShellPrompt:shell withPromptVariable:promptVars[shell]] ?: @"";
         }
         _shellPrompts = [prompts copy];
 
-        // Initial update
         [self updateAllTerminals];
 
-        // Repeating timer
-        _timer = [NSTimer scheduledTimerWithTimeInterval:0.5
+        _timer = [NSTimer scheduledTimerWithTimeInterval:0.1
                                                   target:self
                                                 selector:@selector(updateAllTerminals)
                                                 userInfo:nil
@@ -278,9 +269,7 @@ static NSString *StripANSIEscapes(NSString *s) {
     }
 
     CFTypeRef selectedRange = NULL;
-    AXError rangeError = AXUIElementCopyAttributeValue(element,
-                                                     kAXSelectedTextRangeAttribute,
-                                                     &selectedRange);
+    AXError rangeError = AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute, &selectedRange);
 
     if (rangeError == kAXErrorSuccess && selectedRange) {
         CFTypeRef boundsForRange = NULL;
@@ -293,7 +282,7 @@ static NSString *StripANSIEscapes(NSString *s) {
             CGRect bounds;
             AXValueGetValue((AXValueRef)boundsForRange, kAXValueCGRectType, &bounds);
             CGPoint cursorPos = CGPointMake(bounds.origin.x + bounds.size.width,
-                                          bounds.origin.y + bounds.size.height);
+                                            bounds.origin.y + bounds.size.height);
             CFRelease(boundsForRange);
             CFRelease(selectedRange);
             return cursorPos;
@@ -324,9 +313,7 @@ static NSString *StripANSIEscapes(NSString *s) {
     CGPoint cursorPosition = [self findCursorInElement:window depth:0 maxDepth:4];
     if (CGPointEqualToPoint(cursorPosition, CGPointZero)) {
         CFTypeRef windowPos = NULL;
-        AXError error = AXUIElementCopyAttributeValue(window,
-                                                      kAXPositionAttribute,
-                                                      &windowPos);
+        AXError error = AXUIElementCopyAttributeValue(window, kAXPositionAttribute, &windowPos);
         if (error == kAXErrorSuccess && windowPos) {
             AXValueGetValue((AXValueRef)windowPos, kAXValueCGPointType, &cursorPosition);
             CFRelease(windowPos);
@@ -336,9 +323,7 @@ static NSString *StripANSIEscapes(NSString *s) {
 }
 
 - (void)collectBufferInfo:(AXUIElementRef)element depth:(int)depth maxDepth:(int)maxDepth into:(NSMutableArray*)buffers {
-    if (depth > maxDepth) {
-        return;
-    }
+    if (depth > maxDepth) return;
 
     CFTypeRef role = NULL;
     AXUIElementCopyAttributeValue(element, kAXRoleAttribute, (CFTypeRef*)&role);
@@ -347,31 +332,23 @@ static NSString *StripANSIEscapes(NSString *s) {
     CFTypeRef description = NULL;
     AXUIElementCopyAttributeValue(element, kAXDescriptionAttribute, (CFTypeRef*)&description);
     NSString *descStr = description ? (__bridge NSString*)description : @"(null)";
-    if (description)
-        CFRelease(description);
-    if (role)
-        CFRelease(role);
+    if (description) CFRelease(description);
+    if (role) CFRelease(role);
 
     CFTypeRef value = NULL;
     AXError valueError = AXUIElementCopyAttributeValue(element, kAXValueAttribute, &value);
 
     do {
-        if (valueError != kAXErrorSuccess || !value)
-            break;
-        if (CFGetTypeID(value) != CFStringGetTypeID())
-            break;
+        if (valueError != kAXErrorSuccess || !value) break;
+        if (CFGetTypeID(value) != CFStringGetTypeID()) break;
 
         CFStringRef textValue = (CFStringRef)value;
         NSString *text = (__bridge NSString*)textValue;
-        if (text.length == 0)
-            break;
+        if (text.length == 0) break;
 
         CFTypeRef selectedRange = NULL;
-        AXError rangeError = AXUIElementCopyAttributeValue(element,
-                                                           kAXSelectedTextRangeAttribute,
-                                                           &selectedRange);
-        if (rangeError != kAXErrorSuccess || !selectedRange)
-            break;
+        AXError rangeError = AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute, &selectedRange);
+        if (rangeError != kAXErrorSuccess || !selectedRange) break;
 
         CFRange range;
         AXValueGetValue((AXValueRef)selectedRange, kAXValueCFRangeType, &range);
@@ -396,8 +373,7 @@ static NSString *StripANSIEscapes(NSString *s) {
         CFRelease(selectedRange);
     } while(0);
 
-    if (value)
-        CFRelease(value);
+    if (value) CFRelease(value);
 
     CFArrayRef children = NULL;
     AXError error = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute, (CFTypeRef*)&children);
@@ -471,9 +447,7 @@ static NSString *StripANSIEscapes(NSString *s) {
 
     // Update window title
     CFTypeRef titleValue = NULL;
-    AXError error = AXUIElementCopyAttributeValue(window,
-                                                  kAXTitleAttribute,
-                                                  &titleValue);
+    AXError error = AXUIElementCopyAttributeValue(window, kAXTitleAttribute, &titleValue);
     if (error == kAXErrorSuccess && titleValue) {
         termWindow.windowTitle = [(__bridge NSString*)titleValue copy];
         CFRelease(titleValue);
@@ -489,16 +463,53 @@ static NSString *StripANSIEscapes(NSString *s) {
     termWindow.bufferInfo = [self getTerminalBufferInfo:termWindow.axWindow];
     termWindow.focused = isFocused;
 
+    // Buffer text safety
+    NSString *bufferText = [termWindow.bufferInfo objectForKey:@"text"];
+    if (![bufferText isKindOfClass:[NSString class]] || bufferText.length == 0) {
+        termWindow.terminalInput = nil;
+        return;
+    }
+
+    NSArray *lines = [bufferText componentsSeparatedByString:@"\n"];
+
+    // Detect shell once
     if (termWindow.shell == nil) {
-        NSArray *lines = [termWindow.bufferInfo[@"text"] componentsSeparatedByString:@"\n"];
         for (NSString *line in lines) {
-            for (NSString *shell in _shellPrompts)
-                if ([line containsString:_shellPrompts[shell]]) {
+            for (NSString *shell in _shellPrompts) {
+                NSString *promptStr = _shellPrompts[shell];
+                if (promptStr.length > 0 && [line containsString:promptStr]) {
                     termWindow.shell = shell;
                     break;
                 }
-            if (termWindow.shell != nil)
+            }
+            if (termWindow.shell != nil) break;
+        }
+    }
+
+    termWindow.terminalInput = nil;
+    NSString *lastLine = [lines lastObject] ?: @"";
+    NSString *prompt = termWindow.shell ? _shellPrompts[termWindow.shell] : nil;
+    if (lastLine.length == 0 || prompt.length == 0)
+        return;
+
+    if (![lastLine containsString:prompt])
+        return;
+
+    // Keep your search logic but protect against nil
+    for (int i = 0; i < (int)lastLine.length; i++) {
+        if (i + (int)prompt.length >= (int)lastLine.length) break;
+        if ([lastLine characterAtIndex:i] == [prompt characterAtIndex:0]) {
+            BOOL match = YES;
+            for (int j = 0; j < (int)prompt.length; j++) {
+                if ([lastLine characterAtIndex:i + j] != [prompt characterAtIndex:j]) {
+                    match = NO;
+                    break;
+                }
+            }
+            if (match) {
+                termWindow.terminalInput = [lastLine substringWithRange:NSMakeRange(i, prompt.length)];
                 break;
+            }
         }
     }
 }
@@ -507,7 +518,6 @@ static NSString *StripANSIEscapes(NSString *s) {
     static NSNumber *lastFocusedPID = nil;
     NSNumber *currentFocusedPID = nil;
 
-    // Get the focused window from the frontmost application
     AXUIElementRef focusedWindow = NULL;
     NSRunningApplication *frontmostApp = [[NSWorkspace sharedWorkspace] frontmostApplication];
     if (frontmostApp) {
@@ -531,9 +541,7 @@ static NSString *StripANSIEscapes(NSString *s) {
 
         AXUIElementRef appElement = AXUIElementCreateApplication(pid);
         CFArrayRef windowList = NULL;
-        AXError error = AXUIElementCopyAttributeValue(appElement,
-                                                     kAXWindowsAttribute,
-                                                     (CFTypeRef*)&windowList);
+        AXError error = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute, (CFTypeRef*)&windowList);
         if (error == kAXErrorSuccess && windowList) {
             CFIndex windowCount = CFArrayGetCount(windowList);
             for (CFIndex i = 0; i < windowCount; i++) {
@@ -547,32 +555,25 @@ static NSString *StripANSIEscapes(NSString *s) {
                         currentFocusedPID = @(pid);
                 }
 
-                [self updateTerminalWindow:window
-                                       pid:pid
-                                   appName:app.localizedName
-                                   focused:isFocused];
+                [self updateTerminalWindow:window pid:pid appName:app.localizedName focused:isFocused];
                 CFRelease(window);
             }
             CFRelease(windowList);
         }
         CFRelease(appElement);
     }
-    if (focusedWindow)
-        CFRelease(focusedWindow);
+    if (focusedWindow) CFRelease(focusedWindow);
 
     for (NSNumber *pidNum in [_terminals allKeys])
         if (![currentPIDs containsObject:pidNum])
             [_terminals removeObjectForKey:pidNum];
 
-    // Refresh the public immutable snapshot
     self.terminals = [_terminals copy];
 
-    // Bulk update notification
     [[NSNotificationCenter defaultCenter] postNotificationName:TerminalWatcherDidUpdateTerminalsNotification
                                                         object:self
                                                       userInfo:nil];
 
-    // Focus change notification
     BOOL focusedChanged = (lastFocusedPID == nil && currentFocusedPID != nil) ||
                           (lastFocusedPID != nil && currentFocusedPID == nil) ||
                           (lastFocusedPID != nil && currentFocusedPID != nil && ![lastFocusedPID isEqualToNumber:currentFocusedPID]);

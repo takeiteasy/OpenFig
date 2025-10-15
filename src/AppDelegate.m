@@ -11,14 +11,13 @@
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _window = [[SuggestionWindow new] initWithDelegate:self];
+        _window = [[SuggestionWindow alloc] initWithDelegate:self];
         _watcher = [[TerminalWatcher new] init];
     }
     return self;
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
-    // Observe terminal updates and focus changes.
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
     [nc addObserver:self selector:@selector(terminalsUpdated:) name:TerminalWatcherDidUpdateTerminalsNotification object:_watcher];
     [nc addObserver:self selector:@selector(terminalUpdated:) name:TerminalWatcherTerminalDidUpdateNotification object:_watcher];
@@ -35,8 +34,10 @@
     TerminalWindow *tw = nil;
     if ([terminalObj isKindOfClass:[TerminalWindow class]])
         tw = (TerminalWindow*)terminalObj;
-    if (tw)
+    if (tw) {
+        [_window show:tw.cursorPosition];
         NSLog(@"Updated terminal %@ (%f, %f) focused=%d", tw.appName, tw.cursorPosition.x, tw.cursorPosition.y, tw.isFocused);
+    }
 }
 
 - (void)focusedTerminalChanged:(NSNotification *)note {
