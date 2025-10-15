@@ -19,14 +19,41 @@
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
     NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
-    [nc addObserver:self selector:@selector(terminalsUpdated:) name:TerminalWatcherDidUpdateTerminalsNotification object:_watcher];
-    [nc addObserver:self selector:@selector(terminalUpdated:) name:TerminalWatcherTerminalDidUpdateNotification object:_watcher];
-    [nc addObserver:self selector:@selector(focusedTerminalChanged:) name:TerminalWatcherFocusedTerminalDidChangeNotification object:_watcher];
+    [nc addObserver:self
+           selector:@selector(terminalsUpdated:)
+               name:TerminalWatcherDidUpdateTerminalsNotification
+             object:_watcher];
+    [nc addObserver:self
+           selector:@selector(terminalUpdated:)
+               name:TerminalWatcherTerminalDidUpdateNotification
+             object:_watcher];
+    [nc addObserver:self
+           selector:@selector(focusedTerminalChanged:)
+               name:TerminalWatcherFocusedTerminalDidChangeNotification
+             object:_watcher];
+    [nc addObserver:self
+           selector:@selector(newTerminalAdded:)
+               name:TerminalWatcherTerminalDidOpenNotification
+             object:_watcher];
+    [nc addObserver:self
+           selector:@selector(terminalClosed:)
+               name:TerminalWatcherTerminalDidCloseNotification
+             object:_watcher];
+}
+
+- (void)newTerminalAdded:(NSNotification *)note {
+    NSDictionary<NSNumber*, TerminalWindow*> *snapshot = _watcher.terminals;
+    (void)snapshot;
+}
+
+- (void)terminalClosed:(NSNotification *)note {
+    NSDictionary<NSNumber*, TerminalWindow*> *snapshot = _watcher.terminals;
+    (void)snapshot;
 }
 
 - (void)terminalsUpdated:(NSNotification *)note {
     NSDictionary<NSNumber*, TerminalWindow*> *snapshot = _watcher.terminals;
-    // React to bulk changes (added/removed terminals)
+    (void)snapshot;
 }
 
 - (void)terminalUpdated:(NSNotification *)note {
@@ -43,8 +70,12 @@
 - (void)focusedTerminalChanged:(NSNotification *)note {
     id terminalObj = note.userInfo[@"terminal"];
     TerminalWindow *focused = nil;
-    if ([terminalObj isKindOfClass:[TerminalWindow class]])
-        focused = (TerminalWindow*)terminalObj;
+    if (!focused) {
+        [_window hide];
+    } else {
+        if ([terminalObj isKindOfClass:[TerminalWindow class]])
+            focused = (TerminalWindow*)terminalObj;
+    }
     NSLog(@"Focused terminal changed: %@", focused ? focused.appName : @"(none)");
 }
 

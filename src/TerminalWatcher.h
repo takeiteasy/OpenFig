@@ -22,6 +22,10 @@ extern NSString * const TerminalWatcherDidUpdateTerminalsNotification;          
 extern NSString * const TerminalWatcherTerminalDidUpdateNotification;           // userInfo: @{ @"pid": NSNumber, @"terminal": TerminalWindow* }
 extern NSString * const TerminalWatcherFocusedTerminalDidChangeNotification;    // userInfo: @{ @"pid": NSNumber (or NSNull), @"terminal": TerminalWindow* (or NSNull) }
 
+// New granular add/remove notifications.
+extern NSString * const TerminalWatcherTerminalDidOpenNotification;             // userInfo: @{ @"pid": NSNumber, @"terminal": TerminalWindow* }
+extern NSString * const TerminalWatcherTerminalDidCloseNotification;            // userInfo: @{ @"pid": NSNumber, @"terminal": TerminalWindow* }
+
 @interface TerminalWatcher : NSObject
 
 // Read-only snapshot of terminals keyed by app PID.

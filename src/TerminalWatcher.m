@@ -10,6 +10,9 @@
 NSString* const TerminalWatcherDidUpdateTerminalsNotification = @"TerminalWatcherDidUpdateTerminalsNotification";
 NSString* const TerminalWatcherTerminalDidUpdateNotification = @"TerminalWatcherTerminalDidUpdateNotification";
 NSString* const TerminalWatcherFocusedTerminalDidChangeNotification = @"TerminalWatcherFocusedTerminalDidChangeNotification";
+// New granular add/remove notifications
+NSString* const TerminalWatcherTerminalDidOpenNotification = @"TerminalWatcherTerminalDidOpenNotification";
+NSString* const TerminalWatcherTerminalDidCloseNotification = @"TerminalWatcherTerminalDidCloseNotification";
 
 @interface TerminalWatcher ()
 // Internal mutable storage and timer
@@ -434,6 +437,7 @@ static NSString *StripANSIEscapes(NSString *s) {
                      focused:(BOOL)isFocused {
     NSNumber *key = @(pid);
     TerminalWindow *termWindow = _terminals[key];
+    BOOL isNew = NO;
     if (!termWindow) {
         termWindow = [[TerminalWindow alloc] init];
         termWindow.pid = pid;
@@ -443,6 +447,7 @@ static NSString *StripANSIEscapes(NSString *s) {
         termWindow.focused = NO;
         CFRetain(window);
         _terminals[key] = termWindow;
+        isNew = YES;
     }
 
     // Update window title
@@ -458,7 +463,8 @@ static NSString *StripANSIEscapes(NSString *s) {
     if (lastPoint.x != termWindow.cursorPosition.x || lastPoint.y != termWindow.cursorPosition.y) {
         [[NSNotificationCenter defaultCenter] postNotificationName:TerminalWatcherTerminalDidUpdateNotification
                                                             object:self
-                                                          userInfo:@{@"terminal": termWindow}];
+                                                          userInfo:@{@"terminal": termWindow,
+                                                                     @"pid": key}];
     }
     termWindow.bufferInfo = [self getTerminalBufferInfo:termWindow.axWindow];
     termWindow.focused = isFocused;
@@ -467,6 +473,13 @@ static NSString *StripANSIEscapes(NSString *s) {
     NSString *bufferText = [termWindow.bufferInfo objectForKey:@"text"];
     if (![bufferText isKindOfClass:[NSString class]] || bufferText.length == 0) {
         termWindow.terminalInput = nil;
+
+        // If this was a newly discovered terminal, notify after initial metadata is set.
+        if (isNew) {
+            [[NSNotificationCenter defaultCenter] postNotificationName:TerminalWatcherTerminalDidOpenNotification
+                                                                object:self
+                                                              userInfo:@{@"pid": key, @"terminal": termWindow}];
+        }
         return;
     }
 
@@ -489,11 +502,23 @@ static NSString *StripANSIEscapes(NSString *s) {
     termWindow.terminalInput = nil;
     NSString *lastLine = [lines lastObject] ?: @"";
     NSString *prompt = termWindow.shell ? _shellPrompts[termWindow.shell] : nil;
-    if (lastLine.length == 0 || prompt.length == 0)
+    if (lastLine.length == 0 || prompt.length == 0) {
+        if (isNew) {
+            [[NSNotificationCenter defaultCenter] postNotificationName:TerminalWatcherTerminalDidOpenNotification
+                                                                object:self
+                                                              userInfo:@{@"pid": key, @"terminal": termWindow}];
+        }
         return;
+    }
 
-    if (![lastLine containsString:prompt])
+    if (![lastLine containsString:prompt]) {
+        if (isNew) {
+            [[NSNotificationCenter defaultCenter] postNotificationName:TerminalWatcherTerminalDidOpenNotification
+                                                                object:self
+                                                              userInfo:@{@"pid": key, @"terminal": termWindow}];
+        }
         return;
+    }
 
     // Keep your search logic but protect against nil
     for (int i = 0; i < (int)lastLine.length; i++) {
@@ -511,6 +536,13 @@ static NSString *StripANSIEscapes(NSString *s) {
                 break;
             }
         }
+    }
+
+    // Notify about newly opened terminal after initial parsing completes
+    if (isNew) {
+        [[NSNotificationCenter defaultCenter] postNotificationName:TerminalWatcherTerminalDidOpenNotification
+                                                            object:self
+                                                          userInfo:@{@"pid": key, @"terminal": termWindow}];
     }
 }
 
@@ -564,11 +596,37 @@ static NSString *StripANSIEscapes(NSString *s) {
     }
     if (focusedWindow) CFRelease(focusedWindow);
 
-    for (NSNumber *pidNum in [_terminals allKeys])
-        if (![currentPIDs containsObject:pidNum])
-            [_terminals removeObjectForKey:pidNum];
+    // Determine removed terminals and notify close for each
+    NSMutableArray<NSNumber*> *toRemove = [NSMutableArray array];
+    NSMutableArray<TerminalWindow*> *removedWindows = [NSMutableArray array];
+
+    for (NSNumber *pidNum in [_terminals allKeys]) {
+        if (![currentPIDs containsObject:pidNum]) {
+            TerminalWindow *tw = _terminals[pidNum];
+            if (tw) {
+                [removedWindows addObject:tw];
+            }
+            [toRemove addObject:pidNum];
+        }
+    }
+
+    for (NSNumber *pidNum in toRemove) {
+        TerminalWindow *tw = _terminals[pidNum];
+        if (tw && tw.axWindow) {
+            // Balance the CFRetain(window) when we created the TerminalWindow
+            CFRelease(tw.axWindow);
+        }
+        [_terminals removeObjectForKey:pidNum];
+    }
 
     self.terminals = [_terminals copy];
+
+    // Post close notifications after updating snapshot
+    for (TerminalWindow *tw in removedWindows) {
+        [[NSNotificationCenter defaultCenter] postNotificationName:TerminalWatcherTerminalDidCloseNotification
+                                                            object:self
+                                                          userInfo:@{@"pid": @(tw.pid), @"terminal": tw}];
+    }
 
     [[NSNotificationCenter defaultCenter] postNotificationName:TerminalWatcherDidUpdateTerminalsNotification
                                                         object:self
