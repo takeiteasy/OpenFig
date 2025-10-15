@@ -69,30 +69,102 @@
     return YES;
 }
 
+#pragma mark - Helpers
+
+// Find the NSScreen that contains the given point in global (Quartz/AX) coordinates
+// (origin at top-left). Falls back to mainScreen if none match.
+- (NSScreen *)screenContainingTopLeftOriginPoint:(CGPoint)topLeftPoint {
+    // Convert to AppKit coordinates (origin bottom-left) for hit-testing screens.
+    NSScreen *main = [NSScreen mainScreen];
+    CGFloat screenHeight = main.frame.size.height;
+    NSPoint appKitPoint = NSMakePoint(topLeftPoint.x, screenHeight - topLeftPoint.y);
+
+    for (NSScreen *screen in [NSScreen screens])
+        if (NSPointInRect(appKitPoint, screen.frame))
+            return screen;
+    return main;
+}
+
+// Clamp desired top-left to stay fully within visibleFrame, with an initial preference
+// to place the window just below the cursor with a small gap. If there isn't enough
+// room below, flip above the cursor (also with a gap).
+- (NSPoint)clampedTopLeftForCursorPoint:(CGPoint)cursorPointTopLeftOrigin
+                                 screen:(NSScreen *)screen
+                          windowPadding:(CGFloat)padding
+                             gapFromRow:(CGFloat)gap {
+    // Convert the incoming top-left-origin point to AppKit top-left y.
+    CGFloat screenHeight = screen.frame.size.height;
+    CGFloat desiredTopYAtCursor = screenHeight - cursorPointTopLeftOrigin.y;
+
+    NSRect vis = screen.visibleFrame;
+
+    // Start by aligning the window directly under the cursor
+    CGFloat topY = desiredTopYAtCursor;
+
+    // Horizontal placement: try to align left edge to cursor X.
+    CGFloat leftX = cursorPointTopLeftOrigin.x;
+
+    // Clamp horizontally within visibleFrame.
+    CGFloat minX = NSMinX(vis);
+    CGFloat maxX = NSMaxX(vis) - self.windowWidth;
+    leftX = MIN(MAX(leftX, minX), maxX);
+
+    // Check if there's enough room below (i.e., bottom >= visible minY).
+    CGFloat bottomY = topY - self.windowHeight;
+    CGFloat minY = NSMinY(vis);
+    CGFloat maxY = NSMaxY(vis);
+
+    if (bottomY < minY) {
+        // Not enough space below; flip above the cursor line with the same gap.
+        topY = desiredTopYAtCursor + self.windowHeight + gap + padding;
+    } else {
+        // Enough space below; offset down by gap so we sit below the row.
+        topY = desiredTopYAtCursor - padding;
+    }
+
+    // Final clamp to visibleFrame vertically.
+    topY = MIN(MAX(topY, minY + self.windowHeight), maxY);
+
+    return NSMakePoint(leftX, topY);
+}
+
 #pragma mark - Public API
 
 - (void)show:(CGPoint)position {
+    // Backward-compatible default gap if caller doesn't provide one.
+    [self showAtPosition:position gap:0];
+}
+
+- (void)showAtPosition:(CGPoint)position gap:(CGFloat)gap {
     if (![NSThread isMainThread]) {
+        CGFloat capturedGap = gap;
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self show:position];
+            [self showAtPosition:position gap:capturedGap];
         });
         return;
     }
 
-    // Convert incoming accessibility (top-left origin) to AppKit (bottom-left)
-    NSScreen *screen = [NSScreen mainScreen];
-    CGFloat screenHeight = screen.frame.size.height;
-    NSPoint newTopLeft = NSMakePoint(position.x, screenHeight - position.y);
+    // Choose the screen that contains the incoming accessibility (top-left origin) point.
+    NSScreen *screen = [self screenContainingTopLeftOriginPoint:position];
+    if (!screen) screen = [NSScreen mainScreen];
 
-    // Update target
-    _targetTopLeft = newTopLeft;
+    // Compute a clamped target top-left that keeps the window fully on-screen and
+    // does not overlap the terminal input row (use a dynamic gap).
+    NSPoint clampedTopLeft = [self clampedTopLeftForCursorPoint:position
+                                                         screen:screen
+                                                  windowPadding:5
+                                                     gapFromRow:gap];
+
+    // Update target used by the spring animation.
+    _targetTopLeft = clampedTopLeft;
 
     [self setOpaque:YES];
     [self setBackgroundColor:[NSColor redColor]];
 
     if (!self.isVisible || !self.isShowing || !_hasInitialPlacement) {
-        // First time: place at the target immediately to avoid sliding in from (0,0)
+        // Ensure correct size before positioning.
         [self setFrame:NSMakeRect(0, 0, self.windowWidth, self.windowHeight) display:NO];
+        // First time: place at the clamped target immediately.
         [self setFrameTopLeftPoint:_targetTopLeft];
         _hasInitialPlacement = YES;
         self.showing = YES;

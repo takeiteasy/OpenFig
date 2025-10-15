@@ -7,7 +7,7 @@
 
 #pragma once
 
-#import "TerminalWindow.h"
+#import <ApplicationServices/ApplicationServices.h>
 #import <Cocoa/Cocoa.h>
 #import <util.h>
 #import <termios.h>
@@ -25,6 +25,19 @@ extern NSString * const TerminalWatcherFocusedTerminalDidChangeNotification;    
 // New granular add/remove notifications.
 extern NSString * const TerminalWatcherTerminalDidOpenNotification;             // userInfo: @{ @"pid": NSNumber, @"terminal": TerminalWindow* }
 extern NSString * const TerminalWatcherTerminalDidCloseNotification;            // userInfo: @{ @"pid": NSNumber, @"terminal": TerminalWindow* }
+
+@interface TerminalWindow : NSObject
+@property (nonatomic, assign) pid_t pid;
+@property (nonatomic, strong) NSString *appName;
+@property (nonatomic, strong) NSString *windowTitle;
+@property (nonatomic, strong) NSString *shell;
+@property (nonatomic) CGPoint cursorPosition;
+@property (nonatomic) CGFloat rowHeight; // New: dynamic line/row height derived from AX
+@property (nonatomic) AXUIElementRef axWindow;
+@property (nonatomic, strong) NSDictionary *bufferInfo; // New: terminal buffer content
+@property (nonatomic, strong) NSString *terminalInput;
+@property (nonatomic, assign, getter=isFocused) BOOL focused;
+@end
 
 @interface TerminalWatcher : NSObject
 

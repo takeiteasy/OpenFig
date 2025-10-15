@@ -10,9 +10,16 @@
 NSString* const TerminalWatcherDidUpdateTerminalsNotification = @"TerminalWatcherDidUpdateTerminalsNotification";
 NSString* const TerminalWatcherTerminalDidUpdateNotification = @"TerminalWatcherTerminalDidUpdateNotification";
 NSString* const TerminalWatcherFocusedTerminalDidChangeNotification = @"TerminalWatcherFocusedTerminalDidChangeNotification";
-// New granular add/remove notifications
 NSString* const TerminalWatcherTerminalDidOpenNotification = @"TerminalWatcherTerminalDidOpenNotification";
 NSString* const TerminalWatcherTerminalDidCloseNotification = @"TerminalWatcherTerminalDidCloseNotification";
+
+@implementation TerminalWindow
+- (void)dealloc {
+    if (_axWindow) {
+        CFRelease(_axWindow);
+    }
+}
+@end
 
 @interface TerminalWatcher ()
 // Internal mutable storage and timer
@@ -224,13 +231,13 @@ static NSString *StripANSIEscapes(NSString *s) {
             return nil;
         }
         NSDictionary *promptVars = @{
-            @"bash": @"PS1",
-            @"zsh": @"PS1",
+//            @"bash": @"PS1",
+//            @"zsh": @"PS1",
             @"fish": @"fish_prompt",
-            @"tcsh": @"prompt",
-            @"csh": @"prompt",
-            @"sh": @"PS1",
-            @"ksh": @"PS1"
+//            @"tcsh": @"prompt",
+//            @"csh": @"prompt",
+//            @"sh": @"PS1",
+//            @"ksh": @"PS1"
         };
         NSMutableDictionary *prompts = [NSMutableDictionary new];
         for (NSString *shell in [promptVars allKeys]) {
@@ -312,6 +319,87 @@ static NSString *StripANSIEscapes(NSString *s) {
     return CGPointZero;
 }
 
+- (CGFloat)findLineHeightInElement:(AXUIElementRef)element depth:(int)depth maxDepth:(int)maxDepth {
+    if (depth > maxDepth) return 0.0;
+
+    CFTypeRef selectedRange = NULL;
+    AXError rangeError = AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute, &selectedRange);
+    if (rangeError == kAXErrorSuccess && selectedRange) {
+        CGFloat height = 0.0;
+
+        // First try: bounds for the caret range
+        CFTypeRef boundsForRange = NULL;
+        AXError boundsError = AXUIElementCopyParameterizedAttributeValue(element,
+                                                                         kAXBoundsForRangeParameterizedAttribute,
+                                                                         selectedRange,
+                                                                         &boundsForRange);
+        if (boundsError == kAXErrorSuccess && boundsForRange) {
+            CGRect rect = CGRectZero;
+            AXValueGetValue((AXValueRef)boundsForRange, kAXValueCGRectType, &rect);
+            height = rect.size.height;
+            CFRelease(boundsForRange);
+        }
+
+        // Fallback: use the whole line's range if caret rect had no height
+        if (height <= 0.0) {
+            CFRange caretRange = {0,0};
+            AXValueGetValue((AXValueRef)selectedRange, kAXValueCFRangeType, &caretRange);
+
+            CFTypeRef lineNumber = NULL;
+            AXError lineForIndexErr = AXUIElementCopyParameterizedAttributeValue(element,
+                                                                                 kAXLineForIndexParameterizedAttribute,
+                                                                                 (CFTypeRef)CFNumberCreate(kCFAllocatorDefault, kCFNumberCFIndexType, &caretRange.location),
+                                                                                 &lineNumber);
+            if (lineForIndexErr == kAXErrorSuccess && lineNumber) {
+                CFIndex lineIdx = 0;
+                CFNumberGetValue((CFNumberRef)lineNumber, kCFNumberCFIndexType, &lineIdx);
+
+                CFTypeRef lineRangeValue = NULL;
+                AXError rangeForLineErr = AXUIElementCopyParameterizedAttributeValue(element,
+                                                                                     kAXRangeForLineParameterizedAttribute,
+                                                                                     lineNumber,
+                                                                                     &lineRangeValue);
+                if (rangeForLineErr == kAXErrorSuccess && lineRangeValue) {
+                    CFTypeRef lineBoundsValue = NULL;
+                    AXError lineBoundsErr = AXUIElementCopyParameterizedAttributeValue(element,
+                                                                                       kAXBoundsForRangeParameterizedAttribute,
+                                                                                       lineRangeValue,
+                                                                                       &lineBoundsValue);
+                    if (lineBoundsErr == kAXErrorSuccess && lineBoundsValue) {
+                        CGRect rect = CGRectZero;
+                        AXValueGetValue((AXValueRef)lineBoundsValue, kAXValueCGRectType, &rect);
+                        height = rect.size.height;
+                        CFRelease(lineBoundsValue);
+                    }
+                    CFRelease(lineRangeValue);
+                }
+                CFRelease(lineNumber);
+            }
+        }
+
+        CFRelease(selectedRange);
+        if (height > 0.0)
+            return height;
+    }
+
+    // Recurse into children
+    CFArrayRef children = NULL;
+    AXError error = AXUIElementCopyAttributeValue(element, kAXChildrenAttribute, (CFTypeRef*)&children);
+    if (error == kAXErrorSuccess && children) {
+        for (CFIndex i = 0; i < CFArrayGetCount(children); i++) {
+            AXUIElementRef child = (AXUIElementRef)CFArrayGetValueAtIndex(children, i);
+            CGFloat h = [self findLineHeightInElement:child depth:depth+1 maxDepth:maxDepth];
+            if (h > 0.0) {
+                CFRelease(children);
+                return h;
+            }
+        }
+        CFRelease(children);
+    }
+
+    return 0.0;
+}
+
 - (CGPoint)getCursorPositionForWindow:(AXUIElementRef)window {
     CGPoint cursorPosition = [self findCursorInElement:window depth:0 maxDepth:4];
     if (CGPointEqualToPoint(cursorPosition, CGPointZero)) {
@@ -323,6 +411,11 @@ static NSString *StripANSIEscapes(NSString *s) {
         }
     }
     return cursorPosition;
+}
+
+- (CGFloat)getLineHeightForWindow:(AXUIElementRef)window {
+    CGFloat h = [self findLineHeightInElement:window depth:0 maxDepth:4];
+    return h;
 }
 
 - (void)collectBufferInfo:(AXUIElementRef)element depth:(int)depth maxDepth:(int)maxDepth into:(NSMutableArray*)buffers {
@@ -445,6 +538,7 @@ static NSString *StripANSIEscapes(NSString *s) {
         termWindow.axWindow = window;
         termWindow.shell = nil;
         termWindow.focused = NO;
+        termWindow.rowHeight = 0.0;
         CFRetain(window);
         _terminals[key] = termWindow;
         isNew = YES;
@@ -460,6 +554,12 @@ static NSString *StripANSIEscapes(NSString *s) {
 
     CGPoint lastPoint = termWindow.cursorPosition;
     termWindow.cursorPosition = [self getCursorPositionForWindow:window];
+    // Update row height dynamically
+    CGFloat measuredRowHeight = [self getLineHeightForWindow:window];
+    if (measuredRowHeight > 0.0) {
+        termWindow.rowHeight = measuredRowHeight;
+    }
+
     if (lastPoint.x != termWindow.cursorPosition.x || lastPoint.y != termWindow.cursorPosition.y) {
         [[NSNotificationCenter defaultCenter] postNotificationName:TerminalWatcherTerminalDidUpdateNotification
                                                             object:self

@@ -1,5 +1,4 @@
 #import "AppDelegate.h"
-#import "TerminalWatcher.h"
 
 @interface AppDelegate ()
 @end
@@ -62,8 +61,8 @@
     if ([terminalObj isKindOfClass:[TerminalWindow class]])
         tw = (TerminalWindow*)terminalObj;
     if (tw) {
-        [_window show:tw.cursorPosition];
-        NSLog(@"Updated terminal %@ (%f, %f) focused=%d", tw.appName, tw.cursorPosition.x, tw.cursorPosition.y, tw.isFocused);
+        [_window showAtPosition:tw.cursorPosition gap:tw.rowHeight];
+        NSLog(@"Updated terminal %@ (%f, %f) focused=%d rowHeight=%.2f", tw.appName, tw.cursorPosition.x, tw.cursorPosition.y, tw.isFocused, tw.rowHeight);
     }
 }
 
